@@ -38,3 +38,7 @@ Open the address it prints (normally http://localhost:5173) in the browser under
 findings doc says what to do on the page (section 3) and what to report back (section 4).
 
 To check the types, run `npm run typecheck` in `spike/`.
+
+## License
+
+License: [MIT](LICENSE)
