@@ -243,7 +243,9 @@ function sigOf(pads: Snap[], base: Map<number, Snap>, keys: Iterable<string>): S
   const sig: Sig = { buttons: [], axes: [], keys: [...keys].sort() };
   for (const p of pads) {
     const rest = base.get(p.index);
-    if (!rest) continue;
+    // A controller that changes mode keeps its index but comes back as a different device with
+    // different resting values. Compared with the old ones, its rest would read as an input.
+    if (!rest || rest.id !== p.id) continue;
     for (let i = 0; i < p.pressed.length; i++) {
       if (p.pressed[i] !== (rest.pressed[i] ?? false)) {
         sig.buttons.push({ pad: p.index, index: i, pressed: p.pressed[i], value: p.values[i] });
@@ -278,6 +280,11 @@ function fmtSig(s: Sig): string {
 
 function baselineNow(): Map<number, Snap> {
   return new Map(readPads().map((p) => [p.index, p]));
+}
+
+// True when a pad the baseline was taken from is gone, or is back as a different device.
+function baseLost(pads: Snap[], base: Map<number, Snap>): boolean {
+  return [...base.values()].some((rest) => pads.find((p) => p.index === rest.index)?.id !== rest.id);
 }
 
 const NO_KEYS: string[] = [];
@@ -340,6 +347,7 @@ function renderKbd(): void {
 const HOLD_MS = 60; // an input must stay unchanged this long to be recorded
 const COUNTDOWN_MS = 3000;
 const RELEASE_SETTLE_MS = 1000;
+const RELEASE_LOG_CAP = 20; // a pad that never settles must not grow the log forever
 
 interface Step {
   id: string;
@@ -364,7 +372,13 @@ const STEPS: Step[] = [
       'Press every OTHER button on the controller, one at a time (shortcut buttons, Start, Select, Home, L3, R3, touchpad...). Click "Done with extra buttons" when none are left',
     kind: 'extras',
   },
-  { id: 'down + right together', prompt: 'Hold DOWN and RIGHT together and keep holding', kind: 'countdown' },
+  // One direction first, like the two steps after it: the first state recorded then names the
+  // direction that is really held, so a wrong pair of buttons shows up in the report.
+  {
+    id: 'down, then right added',
+    prompt: 'Hold DOWN. Keep holding it and also press RIGHT. Keep both held',
+    kind: 'countdown',
+  },
   {
     id: 'left, then right added',
     prompt: 'Hold LEFT. Keep holding it and also press RIGHT. Keep both held',
@@ -377,11 +391,21 @@ const STEPS: Step[] = [
   },
 ];
 
+// One distinct state seen during a two-direction step. `names` are the single inputs recorded
+// earlier that were held at that moment.
+interface WizState {
+  tMs: number;
+  sig: Sig;
+  names: string[];
+}
+
 interface WizResult {
   step: string;
   skipped?: true;
   sig?: Sig;
-  states?: { tMs: number; sig: Sig }[];
+  states?: WizState[];
+  release?: WizState[]; // what was seen while letting go, on the same clock as `states`
+  startMs?: number; // page time when `states` began, to line up with the connect/disconnect log
 }
 
 type WizPhase = 'idle' | 'press' | 'release' | 'countdown' | 'finished';
@@ -394,12 +418,17 @@ const wiz = {
   candSince: 0,
   extras: 0,
   cdStart: 0,
-  cdStates: [] as { tMs: number; sig: Sig }[],
+  cdStates: [] as WizState[],
+  cdRelease: [] as WizState[],
   cdLastKey: '',
   restSince: NaN,
   note: '',
+  lost: false,
   results: [] as WizResult[],
 };
+
+const LOST_NOTE =
+  'The controller disconnected or changed mode after mapping started, so what was recorded from then on cannot be trusted. Leave the mode switch alone and start mapping again.';
 
 function wizStart(): void {
   wiz.phase = 'press';
@@ -408,6 +437,7 @@ function wizStart(): void {
   wiz.candKey = '';
   wiz.extras = 0;
   wiz.results = [];
+  wiz.lost = false;
   heldKeys.clear();
   wiz.note =
     wiz.base.size === 0
@@ -432,11 +462,24 @@ function wizSkip(): void {
 
 function wizSample(pads: Snap[], now: number): void {
   if (wiz.phase === 'idle' || wiz.phase === 'finished') return;
+  // Record nothing while the pad is not the one the resting values were taken from. The note
+  // stays in the report even if the pad comes back.
+  wiz.lost = baseLost(pads, wiz.base);
+  if (wiz.lost) {
+    wiz.note = LOST_NOTE;
+    return;
+  }
   const step = STEPS[wiz.step];
   const sig = sigOf(pads, wiz.base, heldKeys);
   const key = sigKey(sig);
 
   if (wiz.phase === 'release') {
+    // Two directions that cancelled to the resting value look like nothing was held. What shows
+    // up while letting go says which inputs really were: the one let go last appears alone.
+    if (step.kind === 'countdown' && key !== wiz.cdLastKey && wiz.cdRelease.length < RELEASE_LOG_CAP) {
+      wiz.cdRelease.push({ tMs: now - wiz.cdStart, sig, names: namedHeld(pads) });
+      wiz.cdLastKey = key;
+    }
     if (key !== '') {
       wiz.restSince = NaN;
       return;
@@ -462,7 +505,8 @@ function wizSample(pads: Snap[], now: number): void {
     if (step.kind === 'countdown') {
       wiz.phase = 'countdown';
       wiz.cdStart = now;
-      wiz.cdStates = [{ tMs: 0, sig }];
+      wiz.cdStates = [{ tMs: 0, sig, names: namedHeld(pads) }];
+      wiz.cdRelease = [];
       wiz.cdLastKey = key;
       return;
     }
@@ -482,17 +526,18 @@ function wizSample(pads: Snap[], now: number): void {
 
   // countdown: log every distinct state seen, in order, then keep the last one.
   if (key !== wiz.cdLastKey) {
-    wiz.cdStates.push({ tMs: now - wiz.cdStart, sig });
+    wiz.cdStates.push({ tMs: now - wiz.cdStart, sig, names: namedHeld(pads) });
     wiz.cdLastKey = key;
   }
   if (now - wiz.cdStart >= COUNTDOWN_MS) {
-    wiz.results.push({ step: step.id, sig, states: wiz.cdStates });
+    wiz.results.push({ step: step.id, sig, states: wiz.cdStates, release: wiz.cdRelease, startMs: wiz.cdStart });
     wiz.phase = 'release';
     wiz.restSince = NaN;
   }
 }
 
 function wizPrompt(now: number): string {
+  if (wiz.lost && wiz.phase !== 'idle' && wiz.phase !== 'finished') return LOST_NOTE;
   switch (wiz.phase) {
     case 'idle':
       return 'Not started.';
@@ -511,11 +556,20 @@ function wizPrompt(now: number): string {
   }
 }
 
+// A hat axis gives each diagonal a value of its own, so a diagonal matching no single input is
+// what a hat is expected to show. Two buttons at once match both names.
+function fmtWizState(s: WizState): string {
+  const rest = sigKey(s.sig) === '';
+  const names = rest ? '' : s.names.length ? ` [= ${s.names.join(' + ')}]` : ' [matches no single input recorded above]';
+  return `at ${f1(s.tMs)} ms ${fmtSig(s.sig)}${names}`;
+}
+
 function fmtWizResult(r: WizResult): string {
   if (r.skipped || !r.sig) return `${r.step}: skipped`;
   if (r.states) {
-    const seq = r.states.map((s) => `at ${f1(s.tMs)} ms ${fmtSig(s.sig)}`).join('  ->  ');
-    return `${r.step}: ${seq}  |  still held at the end: ${fmtSig(r.sig)}`;
+    const seq = r.states.map(fmtWizState).join('  ->  ');
+    const release = r.release?.length ? r.release.map(fmtWizState).join('  ->  ') : 'no change seen';
+    return `${r.step} (started at t=${f1(r.startMs ?? NaN)}): ${seq}  |  still held at the end: ${fmtSig(r.sig)}  |  while letting go: ${release}`;
   }
   return `${r.step}: ${fmtSig(r.sig)}`;
 }
@@ -559,7 +613,8 @@ interface GapSet {
   cb: number[]; // gap between the moments our callback actually started (when the pad is read)
 }
 
-const fast = { on: false, polls: 0, lastPoll: 0, ratePolls: 0, rateAt: performance.now(), rate: 0 };
+// rateWhenOn outlives unticking the box, so a report copied afterwards still has the rate.
+const fast = { on: false, polls: 0, lastPoll: 0, ratePolls: 0, rateAt: performance.now(), rate: 0, rateWhenOn: 0 };
 const gapSets: Record<'fastOff' | 'fastOn', GapSet> = {
   fastOff: { raf: [], cb: [] },
   fastOn: { raf: [], cb: [] },
@@ -650,6 +705,7 @@ function renderTiming(now: number): void {
     fast.rate = ((fast.polls - fast.ratePolls) * 1000) / (now - fast.rateAt);
     fast.ratePolls = fast.polls;
     fast.rateAt = now;
+    if (fast.on) fast.rateWhenOn = fast.rate;
   }
   const lines = [
     `tab visible: ${document.visibilityState === 'visible'}   window focused: ${document.hasFocus()}   times hidden since reset: ${frameClock.hiddenCount}`,
@@ -659,7 +715,7 @@ function renderTiming(now: number): void {
     ...gapSetLines('fast poll off', gapSets.fastOff),
     ...gapSetLines('fast poll on ', gapSets.fastOn),
     '',
-    `Fast poll: ${fast.on ? `on, ${fast.rate.toFixed(0)} reads per second` : 'off'}`,
+    `Fast poll: ${fast.on ? `on, ${fast.rate.toFixed(0)} reads per second` : `off${fast.rateWhenOn ? ` (${fast.rateWhenOn.toFixed(0)} reads per second when it was last on)` : ''}`}`,
     '',
     'Gamepad.timestamp (when the browser says the pad last changed). It only moves when something changes:',
   ];
@@ -748,6 +804,12 @@ function tapStart(): void {
     d.tapMask = new Map([...d.last].map(([id, bytes]) => [id, new Uint8Array(bytes.length)]));
     d.tapActive.clear();
     d.tapNoBase = false;
+    // Count changed reports from here. Before the first tap test the page has not learned which
+    // bytes move on their own, and a controller with a counter byte "changes" on every report.
+    d.changeCount = 0;
+    d.lastChangeTs = NaN;
+    d.changeIntervals = [];
+    d.changes = [];
   }
   tap.startedAt = performance.now();
   tap.calibUntil = tap.startedAt + CALIBRATE_MS;
@@ -820,7 +882,7 @@ function tapHead(now: number): string {
   if (tap.running) {
     if (now < tap.calibUntil) return 'WAIT: hands off the controller...';
     if (tap.base.size > 0 && !tap.armed) return 'WAIT: let go of everything...';
-    return `GO: tap one button 20 times, as short as you can, then click Stop. (${f1((now - tap.startedAt) / 1000)} s)`;
+    return `GO: tap one button exactly 10 times, as short as you can, then click Stop. (${f1((now - tap.startedAt) / 1000)} s)`;
   }
   if (tap.startedAt) {
     return `Stopped after ${f1((tap.stoppedAt - tap.startedAt) / 1000)} s. A row with fewer taps than you made missed some.`;
@@ -974,6 +1036,8 @@ let hidStatus = 'hid' in navigator ? 'No device requested yet.' : 'WebHID is not
 
 const hex = (n: number, width: number): string => n.toString(16).padStart(width, '0');
 const hexBytes = (bytes: Uint8Array): string => [...bytes].map((b) => hex(b, 2)).join(' ');
+const hidPerId = (byId: Map<number, Uint8Array>, fmt: (bytes: Uint8Array) => string): string[] =>
+  [...byId].map(([id, bytes]) => `[${id}] ${fmt(bytes)}`);
 
 function hidTapFeed(d: HidDev, id: number, bytes: Uint8Array, ts: number): void {
   const base = d.tapBase.get(id);
@@ -1013,7 +1077,9 @@ function onHidReport(d: HidDev, e: HidReportEventLike): void {
   if (!Number.isNaN(d.lastTs)) push(d.intervals, ts - d.lastTs);
   d.lastTs = ts;
   const prev = d.last.get(e.reportId);
-  if (prev) {
+  // Nothing is logged during a tap test's hands-off window: that is when the page is still
+  // finding out which bytes move on their own.
+  if (prev && !(tap.running && ts < tap.calibUntil)) {
     // Once a tap test has learned which bytes move on their own, leave them out of the log.
     const mask = d.tapMask.get(e.reportId);
     const changed: number[] = [];
@@ -1090,9 +1156,9 @@ function hidDevLines(d: HidDev): string[] {
     ...d.collections.map((c) => `  collection: ${c}`),
     `  input reports received: ${d.reports}${s ? `, about ${(1000 / s.median).toFixed(0)} per second while they are flowing` : ''}`,
     `  gap between reports:                 ${fmtStats(s)}`,
-    `  reports whose content changed (after a tap test: not counting bytes that move on their own): ${d.changeCount}`,
+    `  reports whose content changed (counted from the start of the last tap test, which is also when bytes that move on their own stop counting): ${d.changeCount}`,
     `  gap between changed reports:         ${fmtStats(stats(d.changeIntervals))}`,
-    `  last report per id: ${[...d.last].map(([id, bytes]) => `[${id}] ${hexBytes(bytes)}`).join('  ') || 'none yet'}`,
+    `  last report per id: ${hidPerId(d.last, hexBytes).join('  ') || 'none yet'}`,
     '  last changed reports:',
     ...d.changes.map((c) => `    ${c}`),
   ];
@@ -1160,7 +1226,12 @@ function buildReport(): string {
     timing: {
       framesFastPollOff: gapSetReport(gapSets.fastOff),
       framesFastPollOn: gapSetReport(gapSets.fastOn),
-      fastPoll: { on: fast.on, readsPerSecond: Math.round(fast.rate), totalReads: fast.polls },
+      fastPoll: {
+        on: fast.on,
+        readsPerSecond: Math.round(fast.rate),
+        readsPerSecondWhenLastOn: Math.round(fast.rateWhenOn),
+        totalReads: fast.polls,
+      },
       padTimestamps: [...padClocks].map(([index, c]) => ({
         pad: index,
         gapSeenByFrameReads: stats(c.rafGaps),
@@ -1205,6 +1276,12 @@ function buildReport(): string {
         changedReports: d.changeCount,
         changedReportGapMs: stats(d.changeIntervals),
         lastChanges: d.changes,
+        // Raw bytes, so what the controller itself sends for a held input can be read off the
+        // report: the latest report, the resting one from the last tap test, and the positions
+        // of the bytes that test found moving on their own.
+        lastReportPerId: hidPerId(d.last, hexBytes),
+        restReportPerId: hidPerId(d.tapBase, hexBytes),
+        ignoredBytesPerId: hidPerId(d.tapMask, (mask) => [...mask].flatMap((m, i) => (m ? [i] : [])).join(',')),
       })),
     },
   };
