@@ -17,10 +17,11 @@ survive into the real app. It applies no game rules and does no SOCD cleaning.
 
 ```
 cd spike
+npm ci
 npm run dev
 ```
 
-Dependencies are already installed. Open the address it prints (normally http://localhost:5173)
+Open the address it prints (normally http://localhost:5173)
 in the browser under test. Chrome or Edge is the one that can answer question 3, because WebHID
 only exists there.
 
