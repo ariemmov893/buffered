@@ -246,9 +246,27 @@ To close the spike's three questions:
    tap test. This is the only way to answer question 3 for this controller.
 3. **The facts in section 4**: controller model, mode and SOCD setting; display refresh rate;
    whether Steam was running; how many taps were made; and whether the owner changed mode in the
-   first 20 seconds of run 1 or the controller re-identified itself.
+   first 20 seconds of run 1 or the controller re-identified itself. Mostly answered, see below.
 
 Optional: a run with the display set to 60 Hz.
+
+Steps for items 1 and 2, and what run 1's own data says about the diagonal: [phase0-chromium-run.md](phase0-chromium-run.md).
+
+**The owner's answers, 2026-11-22** (item 3):
+
+- **Controller:** Qanba Sapphire. It was in PS5 mode during run 1.
+- **The identity change:** in the first 20 seconds of run 1 the owner was switching between PS5
+  and PC modes. That is why the pad showed up as `xinput`, vanished, and came back as
+  `2c22-2802-Qanba Sapphire`. The controller did not re-identify by itself.
+- **SOCD:** CAPCOM CPT legal, done in the controller's firmware. Left + right gives neutral, up +
+  down gives neutral.
+- **Display:** 500 Hz. So the roughly 500 reads a second in run 1 were one read per display
+  frame, and the 60 Hz case is still unmeasured on this machine.
+- **Steam:** "was running, I think". Not certain.
+- **Taps made in the tap test:** unknown. The owner cannot confirm the count, so run 1 still
+  cannot say whether a tap was missed.
+
+Still not reported: the controller's firmware version.
 
 ## 9. From published sources (not measured here)
 
