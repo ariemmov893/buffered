@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Buffered: Phase 0 spike</title>
+  </head>
+  <body>
+    <h1>Buffered: Phase 0 spike</h1>
+    <p>
+      Throwaway measurement page. It shows what this browser receives from your controller and how
+      finely it can time it. It applies no game rules and does no SOCD cleaning.
+    </p>
+    <p>
+      <b>All timing on this page is approximate.</b> A page normally reads the controller once per
+      display frame, so anything that happens between two reads can be late by up to a frame or
+      missed entirely. Keep this tab visible and focused while you test: browsers stop delivering
+      controller data to background tabs.
+    </p>
+
+    <h2>0. Environment</h2>
+    <pre id="env"></pre>
+
+    <h2>1. What the controller sends</h2>
+    <p>
+      Click this page, then press any button on the controller. Browsers hide controllers from a
+      page until a button is pressed while the page has focus.
+    </p>
+    <pre id="pads"></pre>
+    <pre id="padlog"></pre>
+
+    <h3>Mapping</h3>
+    <p>
+      Take your hands off the controller, click Start, and follow the prompt. Use Skip for anything
+      your controller does not have. Start again at any time to redo it.
+    </p>
+    <p>
+      <button id="wiz-start">Start mapping</button>
+      <button id="wiz-skip">Skip this step</button>
+      <button id="wiz-done">Done with extra buttons</button>
+    </p>
+    <p><b id="wiz-prompt"></b></p>
+    <pre id="wiz-out"></pre>
+
+    <h2>2. Timing</h2>
+    <p>
+      <button id="timing-reset">Reset timing stats</button>
+      <label>
+        <input type="checkbox" id="fast-on" />
+        Fast poll: also read the controller about 2000 times a second, between frames (keeps one
+        CPU core busy while ticked)
+      </label>
+    </p>
+    <pre id="timing"></pre>
+
+    <h3>Tap test</h3>
+    <p>
+      Click Start and keep your hands off until the line below says GO. Then tap ONE button 20
+      times, each tap as short as you can make it. Click Stop. Every input path that is active is
+      measured at the same time, so the rows can be compared.
+    </p>
+    <p>
+      <button id="tap-start">Start tap test</button>
+      <button id="tap-stop">Stop</button>
+    </p>
+    <p><b id="tap-head"></b></p>
+    <pre id="tap"></pre>
+
+    <h2>3. Other input paths</h2>
+    <h3>Feature detection</h3>
+    <pre id="features"></pre>
+
+    <h3>Gamepad events</h3>
+    <pre id="events"></pre>
+
+    <h3>Keyboard</h3>
+    <p>
+      Only useful if the controller has a keyboard mode. Switch it to that mode and press its
+      buttons.
+      <label>
+        <input type="checkbox" id="kbd-capture" checked />
+        Stop keys from scrolling the page or clicking buttons (F-keys and Ctrl/Alt shortcuts still
+        work)
+      </label>
+    </p>
+    <pre id="kbd"></pre>
+
+    <h3>WebHID</h3>
+    <p>
+      Nothing is requested until you click. The browser will show its own device chooser: pick the
+      controller if it is listed. After connecting, press and release one button so the page knows
+      what the controller's resting report looks like.
+    </p>
+    <p><button id="hid-request">Choose a HID device...</button></p>
+    <pre id="hid"></pre>
+
+    <h2>4. Report</h2>
+    <p>
+      <button id="report-build">Build report</button>
+      <button id="report-copy">Copy report</button>
+      <span id="report-status"></span>
+    </p>
+    <textarea id="report" rows="24" cols="110" readonly></textarea>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

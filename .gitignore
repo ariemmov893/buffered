@@ -17,3 +17,7 @@ desktop.ini
 
 # Logs
 *.log
+
+# Node
+node_modules/
+dist/
